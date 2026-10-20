@@ -23,6 +23,7 @@ from time import time
 import argparse
 import logging
 import os
+from torchvision.utils import save_image
 
 from models import SiT_models
 from download import find_model

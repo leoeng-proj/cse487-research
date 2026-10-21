@@ -308,9 +308,9 @@ def main(args):
                 if dist.get_rank() == 0:
                     sample_dir = os.path.join(args.results_dir, "samples")
                     os.makedirs(sample_dir, exist_ok=True)
-
+                    print("Saving Images...")
                     save_image(
-                        out_samples[:16].cpu(),
+                        out_samples[:8].cpu(),
                         os.path.join(sample_dir, f"samples_{train_steps:07d}.png"),
                         nrow=4,
                         normalize=True,

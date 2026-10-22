@@ -228,7 +228,7 @@ def main(args):
     # Setup classifier-free guidance:
     if use_cfg:
         zs = torch.cat([zs, zs], 0)
-        y_null = torch.tensor([1000] * n, device=device)
+        y_null = torch.tensor([args.num_classes] * n, device=device)
         ys = torch.cat([ys, y_null], 0)
         sample_model_kwargs = dict(y=ys, cfg_scale=args.cfg_scale)
         model_fn = ema.forward_with_cfg

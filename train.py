@@ -37,57 +37,41 @@ import wandb_utils
 #                             Logging Helper Functions                          #
 #################################################################################
 
-def save_checkpoint(model, ema, opt, checkpoint_dir, train_steps, rank, logger, final=False):
+def save_checkpoint(model, ema, opt, checkpoint_dir, train_steps, logger, final=False):
     """Save a checkpoint on rank 0 and synchronize all ranks."""
-    if rank == 0:
-        checkpoint = {
-            "model": model.module.state_dict(),
-            "ema": ema.state_dict(),
-            "opt": opt.state_dict(),
-            "args": args
-        }
-        if final:
-            filename = f"final_{train_steps:07d}.pt"
-        else:
-            filename = f"{train_steps:07d}.pt"
-        checkpoint_path = os.path.join(checkpoint_dir, filename)
-        torch.save(checkpoint, checkpoint_path)
-        logger.info(f"Saved checkpoint to {checkpoint_path}")
-    dist.barrier()
+    checkpoint = {
+        "model": model.module.state_dict(),
+        "ema": ema.state_dict(),
+        "opt": opt.state_dict(),
+        "args": args
+    }
+    if final:
+        filename = f"final_{train_steps:07d}.pt"
+    else:
+        filename = f"{train_steps:07d}.pt"
+    checkpoint_path = os.path.join(checkpoint_dir, filename)
+    torch.save(checkpoint, checkpoint_path)
+    logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-def generate_samples(args, rank, device, train_steps, transport_sampler, zs, model_fn, sample_model_kwargs, use_cfg, vae, logger, directory, final=False):
-    """Generate samples on all ranks and save the image on rank 0."""
-    with torch.no_grad():
-        sample_fn = transport_sampler.sample_ode()
-        samples = sample_fn(zs, model_fn, **sample_model_kwargs)[-1]
-        # Remove the null-condition half when using CFG
-        if use_cfg:
-            samples, _ = samples.chunk(2, dim=0)
-        # Decode latent samples into images
-        samples = vae.decode(samples / 0.18215).sample
-        out_samples = torch.zeros((args.global_batch_size, 3, args.image_size, args.image_size), device=device,)
-        dist.all_gather_into_tensor(out_samples, samples)
-    
-    if rank == 0:
-        sample_dir = os.path.join(directory, "samples")
-        os.makedirs(sample_dir, exist_ok=True)
-        if final:
-            filename = f"samples_final_{train_steps:07d}.png"
-        else:
-            filename = f"samples_{train_steps:07d}.png"
-        sample_path = os.path.join(sample_dir, filename)
-        save_image(
-            out_samples[:8].cpu(),
-            sample_path,
-            nrow=4,
-            normalize=True,
-            value_range=(-1, 1),
-        )
-        logger.info(f"Saved samples to {sample_path}")
-        if args.wandb:
-            wandb_utils.log_image(out_samples, train_steps)
-    
-    dist.barrier()
+def save_samples(out_samples, args, train_steps, logger, directory, final=False):
+    """Save the image on rank 0."""
+    sample_dir = os.path.join(directory, "samples")
+    os.makedirs(sample_dir, exist_ok=True)
+    if final:
+        filename = f"samples_final_{train_steps:07d}.png"
+    else:
+        filename = f"samples_{train_steps:07d}.png"
+    sample_path = os.path.join(sample_dir, filename)
+    save_image(
+        out_samples[:8].cpu(),
+        sample_path,
+        nrow=4,
+        normalize=True,
+        value_range=(-1, 1),
+    )
+    logger.info(f"Saved samples to {sample_path}")
+    if args.wandb:
+        wandb_utils.log_image(out_samples, train_steps)
 
 #################################################################################
 #                             Training Helper Functions                         #
@@ -371,34 +355,63 @@ def main(args):
 
             # Save SiT checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
-                save_checkpoint(model=model, ema=ema, opt=opt, checkpoint_dir=checkpoint_dir, train_steps=train_steps, rank=rank, logger=logger)
+                if rank == 0:
+                    save_checkpoint(model=model, ema=ema, opt=opt, 
+                                    checkpoint_dir=checkpoint_dir, train_steps=train_steps, 
+                                    rank=rank, logger=logger)
+                dist.barrier()
             
             if train_steps % args.sample_every == 0 and train_steps > 0:
                 logger.info("Generating EMA samples...")
-                generate_samples(
-                    args, rank, device, train_steps,
-                    transport_sampler, zs, model_fn,
-                    sample_model_kwargs, use_cfg, vae, logger, directory=experiment_dir
-                )
+                with torch.no_grad():
+                    sample_fn = transport_sampler.sample_ode()
+                    samples = sample_fn(zs, model_fn, **sample_model_kwargs)[-1]
+                    # Remove the null-condition half when using CFG
+                    if use_cfg:
+                        samples, _ = samples.chunk(2, dim=0)
+                    # Decode latent samples into images
+                    samples = vae.decode(samples / 0.18215).sample
+                    out_samples = torch.zeros((args.global_batch_size, 3, args.image_size, args.image_size), device=device,)
+                    dist.all_gather_into_tensor(out_samples, samples)
+
+                if rank == 0:    
+                    save_samples(
+                        out_samples=out_samples, args=args, train_steps=train_steps,
+                        logger=logger, directory=checkpoint_dir
+                    )
+                dist.barrier()
                 logging.info("Generating EMA samples done.")
 
     model.eval()  # important! This disables randomized embedding dropout
     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
-    logger.info("Training finished. Saving final checkpoint...")
-    save_checkpoint(
-        model, ema, opt, args,
-        checkpoint_dir if rank == 0 else None,
-        train_steps, rank, logger,
-        final=True
-    )
+    with torch.no_grad():
+        sample_fn = transport_sampler.sample_ode()
+        samples = sample_fn(zs, model_fn, **sample_model_kwargs)[-1]
+        # Remove the null-condition half when using CFG
+        if use_cfg:
+            samples, _ = samples.chunk(2, dim=0)
+        # Decode latent samples into images
+        samples = vae.decode(samples / 0.18215).sample
+        out_samples = torch.zeros((args.global_batch_size, 3, args.image_size, args.image_size), device=device,)
+        dist.all_gather_into_tensor(out_samples, samples)
 
-    logger.info("Generating final samples...")
-    generate_samples(
-        args, rank, device, train_steps,
-        transport_sampler, zs, model_fn,
-        sample_model_kwargs, use_cfg, vae, logger, directory=experiment_dir,
-        final=True
-    )
+    if rank == 0: 
+        logger.info("Training finished. Saving final checkpoint...")
+        save_checkpoint(
+            model=model, ema=ema, opt=opt, 
+            checkpoint_dir=checkpoint_dir, train_steps=train_steps, 
+            rank=rank, logger=logger, 
+            final=True
+        )
+
+        logger.info("Generating final samples...")
+        save_samples(
+            out_samples=out_samples,
+            args=args, train_steps=train_steps,
+            logger=logger, directory=checkpoint_dir,
+            final=True
+        )
+    dist.barrier()
     logger.info("Done!")
     cleanup()
 

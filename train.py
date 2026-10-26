@@ -219,14 +219,15 @@ def main(args):
     running_loss = 0
     start_time = time()
 
-    # # Labels to condition the model with (feel free to change):
+    # BELOW IS THE NOT WORKING CFG VERSION
+    # Labels to condition the model with (feel free to change):
     # ys = torch.randint(size=(local_batch_size,), device=device)
     # use_cfg = args.cfg_scale > 1.0
     # # Create sampling noise:
     # n = ys.size(0)
     # zs = torch.randn(n, 4, latent_size, latent_size, device=device)
 
-    # Setup classifier-free guidance:
+    # # Setup classifier-free guidance:
     # if use_cfg:
     #     zs = torch.cat([zs, zs], 0)
     #     y_null = torch.tensor([args.num_classes] * n, device=device)
@@ -237,16 +238,38 @@ def main(args):
     #     sample_model_kwargs = dict(y=ys)
     #     model_fn = ema.forward
 
+    # BELOW IS THE WORKING NO CFG VERSION
+    # Labels for the single-class rail dataset
+    # ys = torch.zeros(local_batch_size, dtype=torch.long, device=device)
+    # # Sampling noise
+    # zs = torch.randn(
+    #     local_batch_size, 4, latent_size, latent_size, device=device
+    # )
+    # # Temporarily disable CFG to test basic sampling
+    # use_cfg = False
+    # sample_model_kwargs = dict(y=ys)
+    # model_fn = ema.forward
+
+    # EXPERIMENT SPACE
     # Labels for the single-class rail dataset
     ys = torch.zeros(local_batch_size, dtype=torch.long, device=device)
-    # Sampling noise
-    zs = torch.randn(
-        local_batch_size, 4, latent_size, latent_size, device=device
-    )
-    # Temporarily disable CFG to test basic sampling
-    use_cfg = False
-    sample_model_kwargs = dict(y=ys)
-    model_fn = ema.forward
+
+    # Create sampling noise
+    n = ys.size(0)
+    zs = torch.randn(n, 4, latent_size, latent_size, device=device)
+
+    # Enable classifier-free guidance
+    use_cfg = args.cfg_scale > 1.0
+
+    if use_cfg:
+        zs = torch.cat([zs, zs], 0)
+        y_null = torch.full((n,), args.num_classes, dtype=torch.long, device=device)
+        ys = torch.cat([ys, y_null], 0)
+        sample_model_kwargs = dict(y=ys, cfg_scale=args.cfg_scale)
+        model_fn = ema.forward_with_cfg
+    else:
+        sample_model_kwargs = dict(y=ys)
+        model_fn = ema.forward
 
     logger.info(f"Training for {args.epochs} epochs...")
     for epoch in range(args.epochs):

@@ -341,7 +341,7 @@ def main(args):
                     dist.all_gather_into_tensor(out_samples, samples)
 
                 if dist.get_rank() == 0:
-                    sample_dir = os.path.join(args.results_dir, "samples")
+                    sample_dir = os.path.join(args.checkpoint_dir, "samples")
                     os.makedirs(sample_dir, exist_ok=True)
                     logger.info(f"Saving Images to {sample_dir}...")
                     save_image(

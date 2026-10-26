@@ -375,7 +375,7 @@ def main(args):
                 if rank == 0:    
                     save_samples(
                         out_samples=out_samples, args=args, train_steps=train_steps,
-                        logger=logger, directory=checkpoint_dir
+                        logger=logger, directory=experiment_dir
                     )
                 dist.barrier()
                 logging.info("Generating EMA samples done.")
@@ -401,7 +401,7 @@ def main(args):
         save_samples(
             out_samples=out_samples,
             args=args, train_steps=train_steps,
-            logger=logger, directory=checkpoint_dir,
+            logger=logger, directory=experiment_dir,
             final=True
         )
     dist.barrier()

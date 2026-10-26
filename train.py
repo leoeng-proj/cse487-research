@@ -37,22 +37,25 @@ import wandb_utils
 #                             Logging Helper Functions                          #
 #################################################################################
 
-def save_checkpoint(model, ema, opt, checkpoint_dir, train_steps, logger, final=False):
-    checkpoint = {
-        "model": model.module.state_dict(),
-        "ema": ema.state_dict(),
-        "opt": opt.state_dict(),
-        "args": args
-    }
-    if final:
-        filename = f"final_{train_steps:07d}.pt"
-    else:
-        filename = f"{train_steps:07d}.pt"
-    checkpoint_path = os.path.join(checkpoint_dir, filename)
-    torch.save(checkpoint, checkpoint_path)
-    logger.info(f"Saved checkpoint to {checkpoint_path}")
+def save_checkpoint(model, ema, opt, checkpoint_dir, train_steps, rank, logger, final=False):
+    """Save a checkpoint on rank 0 and synchronize all ranks."""
+    if rank == 0:
+        checkpoint = {
+            "model": model.module.state_dict(),
+            "ema": ema.state_dict(),
+            "opt": opt.state_dict(),
+            "args": args
+        }
+        if final:
+            filename = f"final_{train_steps:07d}.pt"
+        else:
+            filename = f"{train_steps:07d}.pt"
+        checkpoint_path = os.path.join(checkpoint_dir, filename)
+        torch.save(checkpoint, checkpoint_path)
+        logger.info(f"Saved checkpoint to {checkpoint_path}")
+    dist.barrier()
 
-def generate_samples(args, rank, device, train_steps, transport_sampler, zs, model_fn, sample_model_kwargs, use_cfg, vae, logger, final=False):
+def generate_samples(args, rank, device, train_steps, transport_sampler, zs, model_fn, sample_model_kwargs, use_cfg, vae, logger, directory, final=False):
     """Generate samples on all ranks and save the image on rank 0."""
     with torch.no_grad():
         sample_fn = transport_sampler.sample_ode()
@@ -66,7 +69,7 @@ def generate_samples(args, rank, device, train_steps, transport_sampler, zs, mod
         dist.all_gather_into_tensor(out_samples, samples)
     
     if rank == 0:
-        sample_dir = os.path.join(args.results_dir, "samples")
+        sample_dir = os.path.join(directory, "samples")
         os.makedirs(sample_dir, exist_ok=True)
         if final:
             filename = f"samples_final_{train_steps:07d}.png"
@@ -368,16 +371,14 @@ def main(args):
 
             # Save SiT checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
-                if rank == 0:
-                    save_checkpoint(model=model, ema=ema, opt=opt, checkpoint_dir=checkpoint_dir, train_steps=train_steps, logger=logger)
-                dist.barrier()
+                save_checkpoint(model=model, ema=ema, opt=opt, checkpoint_dir=checkpoint_dir, train_steps=train_steps, rank=rank, logger=logger)
             
             if train_steps % args.sample_every == 0 and train_steps > 0:
                 logger.info("Generating EMA samples...")
                 generate_samples(
                     args, rank, device, train_steps,
                     transport_sampler, zs, model_fn,
-                    sample_model_kwargs, use_cfg, vae, logger
+                    sample_model_kwargs, use_cfg, vae, logger, directory=experiment_dir
                 )
                 logging.info("Generating EMA samples done.")
 
@@ -395,7 +396,7 @@ def main(args):
     generate_samples(
         args, rank, device, train_steps,
         transport_sampler, zs, model_fn,
-        sample_model_kwargs, use_cfg, vae, logger,
+        sample_model_kwargs, use_cfg, vae, logger, directory=experiment_dir,
         final=True
     )
     logger.info("Done!")

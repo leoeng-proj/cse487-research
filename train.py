@@ -356,9 +356,7 @@ def main(args):
             # Save SiT checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
                 if rank == 0:
-                    save_checkpoint(model=model, ema=ema, opt=opt, 
-                                    checkpoint_dir=checkpoint_dir, train_steps=train_steps, 
-                                    rank=rank, logger=logger)
+                    save_checkpoint(model=model, ema=ema, opt=opt, checkpoint_dir=checkpoint_dir, train_steps=train_steps, logger=logger)
                 dist.barrier()
             
             if train_steps % args.sample_every == 0 and train_steps > 0:
@@ -397,12 +395,7 @@ def main(args):
 
     if rank == 0: 
         logger.info("Training finished. Saving final checkpoint...")
-        save_checkpoint(
-            model=model, ema=ema, opt=opt, 
-            checkpoint_dir=checkpoint_dir, train_steps=train_steps, 
-            rank=rank, logger=logger, 
-            final=True
-        )
+        save_checkpoint(model=model, ema=ema, opt=opt, checkpoint_dir=checkpoint_dir, train_steps=train_steps, logger=logger, final=True)
 
         logger.info("Generating final samples...")
         save_samples(

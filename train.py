@@ -292,8 +292,10 @@ def main(args):
 
     # EXPERIMENT SPACE
     # Labels for the single-class rail dataset
-    ys = torch.zeros(local_batch_size, dtype=torch.long, device=device)
-
+    # ys = torch.zeros(local_batch_size, dtype=torch.long, device=device)
+    # Labels for multi-class rail dataset
+    ys = torch.arange(local_batch_size, device=device) % args.num_classes
+    
     # Create sampling noise
     n = ys.size(0)
     zs = torch.randn(n, 4, latent_size, latent_size, device=device)

@@ -16,14 +16,14 @@ from torchvision.datasets import ImageFolder
 from torchvision import transforms
 import numpy as np
 from collections import OrderedDict
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from copy import deepcopy
 from glob import glob
 from time import time
 import argparse
 import logging
 import os
-from torchvision.utils import save_image
+from torchvision.utils import save_image, make_grid
 
 from models import SiT_models
 from download import find_model
@@ -53,8 +53,8 @@ def save_checkpoint(model, ema, opt, checkpoint_dir, train_steps, logger, final=
     torch.save(checkpoint, checkpoint_path)
     logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-def save_samples(out_samples, args, train_steps, logger, directory, final=False):
-    """Save the image on rank 0."""
+def save_samples(out_samples, args, train_steps, logger, directory, out_labels=None, class_names=None, final=False):
+    """Save the image on rank 0 with optional class labels."""
     sample_dir = os.path.join(directory, "samples")
     os.makedirs(sample_dir, exist_ok=True)
     if final:
@@ -62,16 +62,83 @@ def save_samples(out_samples, args, train_steps, logger, directory, final=False)
     else:
         filename = f"samples_{train_steps:07d}.png"
     sample_path = os.path.join(sample_dir, filename)
-    save_image(
-        out_samples[:8].cpu(),
-        sample_path,
-        nrow=4,
-        normalize=True,
-        value_range=(-1, 1),
-    )
-    logger.info(f"Saved samples to {sample_path}")
-    if args.wandb:
-        wandb_utils.log_image(out_samples, train_steps)
+
+    num_samples = min(8, out_samples.size(0))
+    samples_to_save = out_samples[:num_samples]
+
+    if out_labels is not None:
+        # Normalize images from [-1, 1] to [0, 1]
+        norm_samples = (samples_to_save.clamp(-1, 1) + 1.0) / 2.0
+        img_h = norm_samples.shape[-2]
+        font_size = max(14, int(img_h * 0.045))
+
+        # Robust font loading with cross-platform fallbacks
+        font = None
+        for font_name in ["DejaVuSans.ttf", "arial.ttf", "LiberationSans-Regular.ttf"]:
+            try:
+                font = ImageFont.truetype(font_name, size=font_size)
+                break
+            except (IOError, OSError):
+                continue
+        if font is None:
+            try:
+                font = ImageFont.load_default(size=font_size)
+            except (TypeError, Exception):
+                font = ImageFont.load_default()
+
+        labeled_tensors = []
+        for i in range(num_samples):
+            img_np = (norm_samples[i].permute(1, 2, 0).cpu().numpy() * 255.0).round().astype(np.uint8)
+            pil_img = Image.fromarray(img_np)
+            draw = ImageDraw.Draw(pil_img)
+
+            cls_id = int(out_labels[i].item()) if hasattr(out_labels[i], "item") else int(out_labels[i])
+            if class_names is not None and 0 <= cls_id < len(class_names):
+                name = str(class_names[cls_id])
+                if name == str(cls_id):
+                    label_text = f"Class {cls_id}"
+                else:
+                    label_text = f"{cls_id}: {name}"
+            else:
+                label_text = f"Class {cls_id}"
+
+            margin = max(6, int(img_h * 0.02))
+            pad = max(3, int(img_h * 0.008))
+
+            try:
+                bbox = draw.textbbox((margin, margin), label_text, font=font)
+            except AttributeError:
+                w, h = draw.textsize(label_text, font=font)
+                bbox = (margin, margin, margin + w, margin + h)
+
+            bg_box = [bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad]
+            try:
+                draw.rounded_rectangle(bg_box, radius=4, fill=(0, 0, 0))
+            except AttributeError:
+                draw.rectangle(bg_box, fill=(0, 0, 0))
+
+            draw.text((margin, margin), label_text, fill=(255, 255, 255), font=font)
+
+            labeled_t = torch.from_numpy(np.array(pil_img)).permute(2, 0, 1).float() / 255.0
+            labeled_tensors.append(labeled_t)
+
+        stacked_labeled = torch.stack(labeled_tensors)
+        grid = make_grid(stacked_labeled, nrow=4)
+        save_image(grid, sample_path)
+        logger.info(f"Saved samples with class labels to {sample_path}")
+        if args.wandb:
+            wandb_utils.log_image(stacked_labeled * 2.0 - 1.0, train_steps)
+    else:
+        save_image(
+            samples_to_save.cpu(),
+            sample_path,
+            nrow=4,
+            normalize=True,
+            value_range=(-1, 1),
+        )
+        logger.info(f"Saved samples to {sample_path}")
+        if args.wandb:
+            wandb_utils.log_image(out_samples, train_steps)
 
 #################################################################################
 #                             Training Helper Functions                         #
@@ -293,8 +360,9 @@ def main(args):
     # EXPERIMENT SPACE
     # Labels for the single-class rail dataset
     # ys = torch.zeros(local_batch_size, dtype=torch.long, device=device)
-    # Labels for multi-class rail dataset
-    ys = torch.arange(local_batch_size, device=device) % args.num_classes
+    # Labels for multi-class rail dataset (using rank offset so across DDP ranks all classes are sampled)
+    sample_ys = (rank * local_batch_size + torch.arange(local_batch_size, device=device)) % args.num_classes
+    ys = sample_ys.clone()
     
     # Create sampling noise
     n = ys.size(0)
@@ -373,14 +441,17 @@ def main(args):
                     samples = vae.decode(samples / 0.18215).sample
                     out_samples = torch.zeros((args.global_batch_size, 3, args.image_size, args.image_size), device=device,)
                     dist.all_gather_into_tensor(out_samples, samples)
+                    out_labels = torch.zeros((args.global_batch_size,), dtype=torch.long, device=device)
+                    dist.all_gather_into_tensor(out_labels, sample_ys)
 
                 if rank == 0:    
                     save_samples(
                         out_samples=out_samples, args=args, train_steps=train_steps,
-                        logger=logger, directory=experiment_dir
+                        logger=logger, directory=experiment_dir,
+                        out_labels=out_labels, class_names=dataset.classes
                     )
                 dist.barrier()
-                logging.info("Generating EMA samples done.")
+                logger.info("Generating EMA samples done.")
 
     model.eval()  # important! This disables randomized embedding dropout
     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
@@ -394,6 +465,8 @@ def main(args):
         samples = vae.decode(samples / 0.18215).sample
         out_samples = torch.zeros((args.global_batch_size, 3, args.image_size, args.image_size), device=device,)
         dist.all_gather_into_tensor(out_samples, samples)
+        out_labels = torch.zeros((args.global_batch_size,), dtype=torch.long, device=device)
+        dist.all_gather_into_tensor(out_labels, sample_ys)
 
     if rank == 0: 
         logger.info("Training finished. Saving final checkpoint...")
@@ -404,6 +477,7 @@ def main(args):
             out_samples=out_samples,
             args=args, train_steps=train_steps,
             logger=logger, directory=experiment_dir,
+            out_labels=out_labels, class_names=dataset.classes,
             final=True
         )
     dist.barrier()

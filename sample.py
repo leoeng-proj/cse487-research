@@ -98,9 +98,11 @@ def main(mode, args):
     # Labels to condition the model with:
     if args.class_labels is not None:
         class_labels = args.class_labels
+    elif args.class_id is not None:
+        class_labels = [args.class_id] * args.num_samples
     elif args.ckpt is not None:
         # Default to class 0 for custom checkpoints (e.g. single-class rail dataset)
-        class_labels = [0] * 8
+        class_labels = [0] * args.num_samples
     else:
         class_labels = [207, 360, 387, 974, 88, 979, 417, 279]
     
@@ -142,8 +144,12 @@ if __name__ == "__main__":
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="mse")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=1000)
+    parser.add_argument("--num-samples", type=int, default=8,
+                        help="Number of images to generate (default: 8).")
+    parser.add_argument("--class-id", type=int, default=None,
+                        help="Single class ID to generate all samples for (e.g. --class-id 3).")
     parser.add_argument("--class-labels", type=int, nargs="+", default=None,
-                        help="Optional class labels to condition on (e.g. 0 0 0 0).")
+                        help="Explicit list of class IDs for each grid cell (e.g. 0 1 2 3). Overrides --class-id.")
     parser.add_argument("--cfg-scale", type=float, default=4.0)
     parser.add_argument("--num-sampling-steps", type=int, default=250)
     parser.add_argument("--seed", type=int, default=0)

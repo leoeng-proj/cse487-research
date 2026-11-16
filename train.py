@@ -264,12 +264,20 @@ def main(args):
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
 
     if args.ckpt is not None:
-        ckpt_path = args.ckpt
-        state_dict = find_model(ckpt_path)
-        model.load_state_dict(state_dict["model"])
-        ema.load_state_dict(state_dict["ema"])
-        opt.load_state_dict(state_dict["opt"])
-        args = state_dict["args"]
+        if rank == 0:
+            logger.info(f"Loading checkpoint from {args.ckpt}...")
+        checkpoint = torch.load(args.ckpt, map_location="cpu")
+        if "ema" in checkpoint and "model" in checkpoint:
+            model.load_state_dict(checkpoint["model"])
+            ema.load_state_dict(checkpoint["ema"])
+        elif "ema" in checkpoint:
+            model.load_state_dict(checkpoint["ema"])
+            ema.load_state_dict(checkpoint["ema"])
+        else:
+            model.load_state_dict(checkpoint)
+            ema.load_state_dict(checkpoint)
+        if rank == 0:
+            logger.info(f"Successfully loaded checkpoint from {args.ckpt}")
 
     requires_grad(ema, False)
     
@@ -316,7 +324,8 @@ def main(args):
     logger.info(f"Class mapping: {dataset.class_to_idx}")
     logger.info(f"Number of classes: {len(dataset.classes)}")
     # Prepare models for training:
-    update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
+    if args.ckpt is None:
+        update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
     ema.eval()  # EMA model should always be in eval mode
 

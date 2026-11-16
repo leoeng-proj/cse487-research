@@ -50,12 +50,13 @@ def main(mode, args):
     torch.set_grad_enabled(False)
 
     # Setup DDP:
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    torch.cuda.set_device(local_rank)
     dist.init_process_group("nccl")
     rank = dist.get_rank()
-    device = rank % torch.cuda.device_count()
+    device = local_rank
     seed = args.global_seed * dist.get_world_size() + rank
     torch.manual_seed(seed)
-    torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
 
     # Auto-download a pre-trained model or load a custom SiT checkpoint from train.py:

@@ -14,6 +14,7 @@ from models import SiT_models
 from train_utils import parse_ode_args, parse_sde_args, parse_transport_args
 from transport import create_transport, Sampler
 import argparse
+import os
 import sys
 from time import time
 
@@ -104,7 +105,8 @@ def main(mode, args):
         # Default to class 0 for custom checkpoints (e.g. single-class rail dataset)
         class_labels = [0] * args.num_samples
     else:
-        class_labels = [207, 360, 387, 974, 88, 979, 417, 279]
+        # Default demo list for pre-trained ImageNet model
+        class_labels = [207, 360, 387, 974, 88, 979, 417, 279][:args.num_samples]
     
     # Create sampling noise:
     n = len(class_labels)
@@ -124,8 +126,27 @@ def main(mode, args):
     samples = vae.decode(samples / 0.18215).sample
     print(f"Sampling took {time() - start_time:.2f} seconds.")
 
-    # Save and display images:
-    save_image(samples, "sample.png", nrow=4, normalize=True, value_range=(-1, 1))
+    # Save individual sampled images:
+    os.makedirs(args.sample_dir, exist_ok=True)
+    ckpt_name = os.path.splitext(os.path.basename(args.ckpt))[0] if args.ckpt else f"pretrained_{args.image_size}x{args.image_size}"
+
+    # Track class counts in case of duplicates
+    class_counts = {}
+    for c in class_labels:
+        class_counts[c] = class_counts.get(c, 0) + 1
+    has_duplicates = any(count > 1 for count in class_counts.values())
+
+    seen_counts = {}
+    for sample, class_id in zip(samples, class_labels):
+        if has_duplicates:
+            idx = seen_counts.get(class_id, 0)
+            seen_counts[class_id] = idx + 1
+            file_name = f"{ckpt_name}_{class_id}_{idx}.png"
+        else:
+            file_name = f"{ckpt_name}_{class_id}.png"
+        save_path = os.path.join(args.sample_dir, file_name)
+        save_image(sample, save_path, normalize=True, value_range=(-1, 1))
+        print(f"Saved: {save_path}")
 
 
 if __name__ == "__main__":
@@ -155,6 +176,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--ckpt", type=str, default=None,
                         help="Optional path to a SiT checkpoint (default: auto-download a pre-trained SiT-XL/2 model).")
+    parser.add_argument("--sample-dir", "--output-dir", dest="sample_dir", type=str, default="samples",
+                        help="Directory to save individual sampled images (default: 'samples').")
 
 
     parse_transport_args(parser)
